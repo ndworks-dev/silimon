@@ -1,4 +1,4 @@
-//! Gera um PNG do painel com dados reais, para conferir o layout sem abrir o menu.
+//! Renders the panel with real data to a PNG, to check the layout without opening the menu.
 
 use macmon::Sampler;
 use objc2::MainThreadMarker;
@@ -28,15 +28,15 @@ pub fn write(mtm: MainThreadMarker, path: &str, dark: bool) -> Result<(), String
     view.refresh();
 
     let bounds = view.bounds();
-    let bitmap = view.bitmapImageRepForCachingDisplayInRect(bounds).ok_or("bitmap indisponível")?;
+    let bitmap = view.bitmapImageRepForCachingDisplayInRect(bounds).ok_or("bitmap unavailable")?;
     view.cacheDisplayInRect_toBitmapImageRep(bounds, &bitmap);
     let png = unsafe {
         bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
     }
-    .ok_or("falha ao gerar o PNG")?;
+    .ok_or("failed to encode the PNG")?;
     if png.writeToFile_atomically(&NSString::from_str(path), true) {
         Ok(())
     } else {
-        Err(format!("não foi possível gravar {path}"))
+        Err(format!("could not write {path}"))
     }
 }

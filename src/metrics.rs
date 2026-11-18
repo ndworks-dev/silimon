@@ -1,4 +1,4 @@
-//! Regras puras de métricas e formatação, sem dependência de AppKit.
+//! Pure metric and formatting rules, free of AppKit.
 
 use std::collections::VecDeque;
 
@@ -50,25 +50,25 @@ impl BarMetric {
 
     pub fn title(self) -> &'static str {
         match self {
-            BarMetric::CpuTemp => "Temperatura da CPU",
-            BarMetric::GpuTemp => "Temperatura da GPU",
-            BarMetric::CpuUsage => "Uso da CPU",
-            BarMetric::GpuUsage => "Uso da GPU",
-            BarMetric::MemPressure => "Pressão de memória",
-            BarMetric::MemUsed => "Memória em uso",
-            BarMetric::Swap => "Swap em uso",
-            BarMetric::ChipPower => "Consumo do chip",
-            BarMetric::SystemPower => "Consumo do sistema",
+            BarMetric::CpuTemp => "CPU Temperature",
+            BarMetric::GpuTemp => "GPU Temperature",
+            BarMetric::CpuUsage => "CPU Usage",
+            BarMetric::GpuUsage => "GPU Usage",
+            BarMetric::MemPressure => "Memory Pressure",
+            BarMetric::MemUsed => "Memory Used",
+            BarMetric::Swap => "Swap Used",
+            BarMetric::ChipPower => "Chip Power",
+            BarMetric::SystemPower => "System Power",
         }
     }
 
-    /// Maior valor comum do mostrador, usado para reservar o espaço na barra.
+    /// The widest common value of a readout, used to reserve its space in the menu bar.
     fn template(self) -> &'static str {
         match self {
             BarMetric::CpuTemp | BarMetric::GpuTemp => "100°",
             BarMetric::CpuUsage | BarMetric::GpuUsage | BarMetric::MemPressure => "100%",
-            BarMetric::MemUsed | BarMetric::Swap => "00,0 GB",
-            BarMetric::ChipPower | BarMetric::SystemPower => "00,0 W",
+            BarMetric::MemUsed | BarMetric::Swap => "00.0 GB",
+            BarMetric::ChipPower | BarMetric::SystemPower => "00.0 W",
         }
     }
 
@@ -85,12 +85,12 @@ impl BarMetric {
             BarMetric::MemUsed => ("RAM", gigabytes(m.memory.ram_usage)),
             BarMetric::Swap => ("SWAP", gigabytes(m.memory.swap_usage)),
             BarMetric::ChipPower => ("SoC", watts(m.chip_power)),
-            BarMetric::SystemPower => ("SIS", watts(m.sys_power)),
+            BarMetric::SystemPower => ("SYS", watts(m.sys_power)),
         }
     }
 }
 
-/// Lê a seleção salva, ignorando chaves desconhecidas e mantendo a ordem do menu.
+/// Reads the saved selection, ignoring unknown keys and keeping the menu order.
 pub fn parse_selection(saved: Option<&str>) -> Vec<BarMetric> {
     let Some(saved) = saved else {
         return vec![BarMetric::CpuTemp];
@@ -110,7 +110,7 @@ fn digit_count(value: &str) -> usize {
     value.chars().filter(char::is_ascii_digit).count()
 }
 
-/// Completa à esquerda com espaços da largura de um dígito, alinhando os números à direita.
+/// Pads on the left with digit-wide spaces, aligning the numbers to the right.
 fn pad_digits(value: String, template: &str) -> String {
     let digits = digit_count(&value);
     if digits == 0 {
@@ -120,7 +120,7 @@ fn pad_digits(value: String, template: &str) -> String {
     std::iter::repeat_n(FIGURE_SPACE, missing).chain(value.chars()).collect()
 }
 
-/// Pares de rótulo e valor exibidos na barra. Rótulo vazio indica valor sozinho.
+/// Label and value pairs shown in the menu bar. An empty label means a lone value.
 pub fn bar_segments(selection: &[BarMetric], metrics: Option<&Metrics>) -> Vec<(&'static str, String)> {
     let Some(m) = metrics else {
         return if selection.is_empty() { Vec::new() } else { vec![("", "—".into())] };
@@ -138,7 +138,7 @@ pub fn bar_segments(selection: &[BarMetric], metrics: Option<&Metrics>) -> Vec<(
         .collect()
 }
 
-/// Segmentos com o maior valor comum de cada métrica, para medir a largura fixa do item.
+/// Segments holding each metric's widest common value, to measure the item's fixed width.
 pub fn bar_template(selection: &[BarMetric]) -> Vec<(&'static str, String)> {
     if selection == [BarMetric::CpuTemp] {
         return vec![("", COMPACT_TEMPLATE.to_string())];
@@ -165,7 +165,7 @@ pub fn percent(ratio: f32) -> String {
 }
 
 fn decimal(value: f64, places: usize) -> String {
-    format!("{value:.places$}").replace('.', ",")
+    format!("{value:.places$}")
 }
 
 pub fn gigabytes(bytes: u64) -> String {
@@ -187,7 +187,7 @@ pub fn rate(bytes_per_second: u64) -> String {
     format!("{} {}", decimal(value, if unit == 0 { 0 } else { 1 }), UNITS[unit])
 }
 
-/// Série de tamanho fixo. Leituras ausentes viram NaN e interrompem a linha do gráfico.
+/// A fixed-size series. Missing readings become NaN and break the chart line.
 #[derive(Default)]
 pub struct History(VecDeque<f32>);
 
@@ -204,7 +204,7 @@ impl History {
     }
 }
 
-/// Faixa do eixo em múltiplos de 10 °C, com ao menos 20 °C de amplitude.
+/// Axis range in multiples of 10 °C, spanning at least 20 °C.
 pub fn temperature_range<'a>(series: impl IntoIterator<Item = &'a History>) -> (f32, f32) {
     let (mut low, mut high) = (f32::INFINITY, f32::NEG_INFINITY);
     for value in series.into_iter().flat_map(History::values).filter(|v| v.is_finite()) {
@@ -281,14 +281,14 @@ mod tests {
         ] {
             assert_eq!(pad_digits(value.to_string(), "100%"), expected);
         }
-        assert_eq!(pad_digits("8,6 GB".to_string(), "00,0 GB"), "\u{2007}8,6 GB");
-        assert_eq!(pad_digits("0,27 W".to_string(), "00,0 W"), "0,27 W");
+        assert_eq!(pad_digits("8.6 GB".to_string(), "00.0 GB"), "\u{2007}8.6 GB");
+        assert_eq!(pad_digits("0.27 W".to_string(), "00.0 W"), "0.27 W");
     }
 
     #[test]
     fn missing_values_and_oversized_values_are_not_padded() {
         assert_eq!(pad_digits("—".to_string(), "100%"), "—");
-        assert_eq!(pad_digits("128,0 GB".to_string(), "00,0 GB"), "128,0 GB");
+        assert_eq!(pad_digits("128.0 GB".to_string(), "00.0 GB"), "128.0 GB");
     }
 
     #[test]
@@ -309,12 +309,12 @@ mod tests {
     }
 
     #[test]
-    fn units_use_brazilian_decimal_separator() {
-        assert_eq!(gigabytes(1_610_612_736), "1,5 GB");
-        assert_eq!(watts(0.268), "0,27 W");
-        assert_eq!(watts(12.34), "12,3 W");
+    fn units_are_formatted() {
+        assert_eq!(gigabytes(1_610_612_736), "1.5 GB");
+        assert_eq!(watts(0.268), "0.27 W");
+        assert_eq!(watts(12.34), "12.3 W");
         assert_eq!(rate(512), "512 B/s");
-        assert_eq!(rate(1536), "1,5 KB/s");
+        assert_eq!(rate(1536), "1.5 KB/s");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Painel desenhado dentro do menu suspenso.
+//! The panel drawn inside the dropdown menu.
 
 use std::cell::RefCell;
 
@@ -29,7 +29,7 @@ pub struct DashboardState {
     pub gpu_temp: History,
     pub pressure: History,
     pub interval_ms: u32,
-    /// Preenche o fundo ao exportar PNG, já que no menu o fundo é do sistema.
+    /// Fills the background when exporting a PNG, since the system draws it in the menu.
     pub opaque: bool,
 }
 
@@ -283,7 +283,7 @@ impl Canvas {
             self.text("GPU", MARGIN + 61.0, self.y, 11.0, regular, &muted, false);
         }
         let minutes = f64::from(state.interval_ms) * HISTORY_LEN as f64 / 60_000.0;
-        self.text(&format!("últimos {minutes:.0} min"), WIDTH - MARGIN, self.y, 11.0, regular, &muted, true);
+        self.text(&format!("last {minutes:.0} min"), WIDTH - MARGIN, self.y, 11.0, regular, &muted, true);
         self.y += 18.0;
     }
 
@@ -306,11 +306,11 @@ impl Canvas {
 fn thermal_status() -> (&'static str, Status) {
     let state = NSProcessInfo::processInfo().thermalState();
     if state == NSProcessInfoThermalState::Critical {
-        ("Crítica", Status::Critical)
+        ("Critical", Status::Critical)
     } else if state == NSProcessInfoThermalState::Serious {
-        ("Alta", Status::Serious)
+        ("Serious", Status::Serious)
     } else if state == NSProcessInfoThermalState::Fair {
-        ("Moderada", Status::Warning)
+        ("Fair", Status::Warning)
     } else {
         ("Nominal", Status::Good)
     }
@@ -318,8 +318,8 @@ fn thermal_status() -> (&'static str, Status) {
 
 fn pressure_status(level: Option<u8>) -> (&'static str, Status) {
     match level {
-        Some(2) => ("Crítica", Status::Critical),
-        Some(1) => ("Atenção", Status::Warning),
+        Some(2) => ("Critical", Status::Critical),
+        Some(1) => ("Warning", Status::Warning),
         _ => ("Normal", Status::Good),
     }
 }
@@ -330,10 +330,10 @@ fn temperature(value: Option<f32>) -> String {
 
 fn tier_name(label: &str) -> String {
     match label {
-        "E" => "Núcleos E".into(),
-        "P" => "Núcleos P".into(),
-        "S" => "Núcleos S".into(),
-        _ => "Núcleos".into(),
+        "E" => "E-cores".into(),
+        "P" => "P-cores".into(),
+        "S" => "S-cores".into(),
+        _ => "Cores".into(),
     }
 }
 
@@ -344,31 +344,31 @@ fn render(state: &DashboardState, c: &mut Canvas) {
     }
     c.y = 8.0;
     let (thermal, status) = thermal_status();
-    c.status_row("Pressão térmica", thermal, status);
+    c.status_row("Thermal Pressure", thermal, status);
     let Some(m) = &state.metrics else {
-        c.row("Sensores", "Lendo…");
+        c.row("Sensors", "Reading…");
         c.y += 6.0;
         return;
     };
-    c.row("Temperatura da CPU", &temperature(m.temp.cpu_temp_avg));
+    c.row("CPU Temperature", &temperature(m.temp.cpu_temp_avg));
     if m.temp.gpu_temp_avg.is_some() {
-        c.row("Temperatura da GPU", &temperature(m.temp.gpu_temp_avg));
+        c.row("GPU Temperature", &temperature(m.temp.gpu_temp_avg));
     }
     c.y += 4.0;
     c.temperature_chart(state);
 
-    c.section("Memória");
+    c.section("Memory");
     let (label, status) = pressure_status(m.memory.pressure_level);
     let percent = m.memory.pressure_percent;
     let value = percent.map_or(label.to_string(), |p| format!("{label} · {p}%"));
-    c.status_row("Pressão", &value, status);
+    c.status_row("Pressure", &value, status);
     c.meter(f32::from(percent.unwrap_or(0)) / 100.0, &status.color());
     c.pressure_chart(state);
     let used = metrics::gigabytes(m.memory.ram_usage);
-    c.row("Em uso", &format!("{used} de {}", metrics::gigabytes(m.memory.ram_total)));
+    c.row("In Use", &format!("{used} of {}", metrics::gigabytes(m.memory.ram_total)));
     c.row("Swap", &metrics::gigabytes(m.memory.swap_usage));
 
-    c.section("Processadores");
+    c.section("Processors");
     c.row("CPU", &metrics::percent(m.cpu_active_ratio));
     for tier in &m.cpu_tiers {
         let value = format!("{} · {} MHz", metrics::percent(tier.active_ratio), tier.freq_mhz);
@@ -377,28 +377,28 @@ fn render(state: &DashboardState, c: &mut Canvas) {
     let gpu = format!("{} · {} MHz", metrics::percent(m.gpu_active_ratio), m.gpu_freq_mhz);
     c.row("GPU", &gpu);
 
-    c.section("Energia");
+    c.section("Power");
     c.pair(("CPU", metrics::watts(m.cpu_power)), ("GPU", metrics::watts(m.gpu_power)));
     c.pair(("RAM", metrics::watts(m.ram_power)), ("ANE", metrics::watts(m.ane_power)));
-    c.pair(("Chip", metrics::watts(m.chip_power)), ("Sistema", metrics::watts(m.sys_power)));
+    c.pair(("Chip", metrics::watts(m.chip_power)), ("System", metrics::watts(m.sys_power)));
 
-    c.section("Atividade");
+    c.section("Activity");
     if let (Some(down), Some(up)) = (m.net_in, m.net_out) {
-        c.row("Rede", &format!("↓ {}  ↑ {}", metrics::rate(down), metrics::rate(up)));
+        c.row("Network", &format!("↓ {}  ↑ {}", metrics::rate(down), metrics::rate(up)));
     }
     if let (Some(read), Some(write)) = (m.disk_read, m.disk_write) {
-        c.row("Disco", &format!("L {}  E {}", metrics::rate(read), metrics::rate(write)));
+        c.row("Disk", &format!("R {}  W {}", metrics::rate(read), metrics::rate(write)));
     }
     for (index, fan) in m.fans.iter().enumerate() {
-        c.row(&format!("Ventoinha {}", index + 1), &format!("{} RPM", fan.rpm));
+        c.row(&format!("Fan {}", index + 1), &format!("{} RPM", fan.rpm));
     }
     if let Some(battery) = m.battery_percent {
         let suffix = match (m.battery_charging, m.battery_plugged) {
-            (Some(true), _) => " · carregando",
-            (_, Some(true)) => " · na tomada",
+            (Some(true), _) => " · charging",
+            (_, Some(true)) => " · plugged in",
             _ => "",
         };
-        c.row("Bateria", &format!("{battery}%{suffix}"));
+        c.row("Battery", &format!("{battery}%{suffix}"));
     }
     c.y += 4.0;
 }

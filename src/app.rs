@@ -1,4 +1,4 @@
-//! Item da barra de menus, menu suspenso e amostragem em segundo plano.
+//! Status item, dropdown menu, background sampling and the update flow.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -11,22 +11,26 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSCellImagePosition,
+    NSAlert, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSCellImagePosition,
     NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontAttributeName,
     NSFontWeightLight, NSFontWeightRegular, NSForegroundColorAttributeName, NSImage,
     NSImageSymbolConfiguration, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSVariableStatusItemLength, NSWorkspace,
 };
 use objc2_foundation::{
     NSAttributedString, NSAttributedStringKey, NSDictionary, NSMutableAttributedString,
-    NSNotification, NSString, ns_string,
+    NSNotification, NSString, NSURL, ns_string,
 };
 
 use crate::dashboard::{DashboardView, STATE};
 use crate::metrics::{self, BarMetric, INTERVALS_MS};
 use crate::prefs;
+use crate::update::{self, Manifest};
 
 const ITEM_PADDING: f64 = 8.0;
+const CHECK_UPDATES_TITLE: &str = "Check for Updates…";
+const FIRST_CHECK_DELAY: Duration = Duration::from_secs(15);
+const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 static INTERVAL_MS: AtomicU32 = AtomicU32::new(metrics::DEFAULT_INTERVAL_MS);
 
@@ -44,6 +48,10 @@ pub struct Ivars {
     last_title: RefCell<String>,
     reserved_width: Cell<Option<f64>>,
     menu_open: Cell<bool>,
+    update_item: OnceCell<Retained<NSMenuItem>>,
+    available_update: RefCell<Option<Manifest>>,
+    prompted_version: RefCell<Option<String>>,
+    update_busy: Cell<bool>,
 }
 
 define_class!(
@@ -60,6 +68,7 @@ define_class!(
         fn did_finish_launching(&self, _notification: &NSNotification) {
             self.build_interface();
             spawn_sampler();
+            spawn_update_timer();
         }
     }
 
@@ -96,6 +105,15 @@ define_class!(
             self.ivars().last_title.borrow_mut().clear();
             self.sync_checkmarks();
             self.update_title();
+        }
+
+        #[unsafe(method(updateAction:))]
+        fn update_action(&self, _sender: &NSMenuItem) {
+            let available = self.ivars().available_update.borrow().clone();
+            match available {
+                Some(manifest) => self.begin_install(manifest),
+                None => self.check_for_updates(true),
+            }
         }
 
         #[unsafe(method(selectInterval:))]
@@ -153,6 +171,7 @@ impl AppDelegate {
 
         let menu = NSMenu::new(mtm);
         menu.setDelegate(Some(ProtocolObject::from_ref(self)));
+        menu.setAutoenablesItems(false);
 
         let dashboard = DashboardView::new(mtm);
         dashboard.refresh();
@@ -166,25 +185,34 @@ impl AppDelegate {
             .enumerate()
             .map(|(tag, m)| self.menu_item(m.title(), sel!(toggleMetric:), tag as isize))
             .collect();
-        menu.addItem(&self.submenu("Mostrar na barra", &metric_items));
+        menu.addItem(&self.submenu("Show in Menu Bar", &metric_items));
         ivars.metric_items.replace(metric_items);
 
         let interval_items: Vec<_> = INTERVALS_MS
             .iter()
             .map(|ms| {
                 let seconds = ms / 1000;
-                let unit = if seconds == 1 { "segundo" } else { "segundos" };
-                self.menu_item(&format!("A cada {seconds} {unit}"), sel!(selectInterval:), *ms as isize)
+                let unit = if seconds == 1 { "second" } else { "seconds" };
+                self.menu_item(&format!("Every {seconds} {unit}"), sel!(selectInterval:), *ms as isize)
             })
             .collect();
-        menu.addItem(&self.submenu("Atualização", &interval_items));
+        menu.addItem(&self.submenu("Update Interval", &interval_items));
         ivars.interval_items.replace(interval_items);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+        let version = NSMenuItem::new(mtm);
+        version.setTitle(&NSString::from_str(&format!("Silimon {}", update::VERSION)));
+        version.setEnabled(false);
+        menu.addItem(&version);
+        let update_item = self.menu_item(CHECK_UPDATES_TITLE, sel!(updateAction:), 0);
+        menu.addItem(&update_item);
+        let _ = ivars.update_item.set(update_item);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
         let quit = unsafe {
             NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
-                ns_string!("Sair do Silimon"),
+                ns_string!("Quit Silimon"),
                 Some(sel!(terminate:)),
                 ns_string!("q"),
             )
@@ -249,13 +277,130 @@ impl AppDelegate {
                 width
             });
             button.setAttributedTitle(&styled_title(&segments));
-            // Só cresce se um valor realmente exceder o espaço reservado.
+            // Grows only when a value really exceeds the reserved space.
             let length = (reserved.max(button.intrinsicContentSize().width) + ITEM_PADDING).ceil();
             if (item.length() - length).abs() > 0.5 {
                 item.setLength(length);
             }
         }
         ivars.last_title.replace(title);
+    }
+
+    fn set_update_item(&self, title: &str, enabled: bool) {
+        if let Some(item) = self.ivars().update_item.get() {
+            item.setTitle(&NSString::from_str(title));
+            item.setEnabled(enabled);
+        }
+    }
+
+    /// Shows an alert and returns the index of the chosen button.
+    fn alert(&self, title: &str, text: &str, buttons: &[&str]) -> isize {
+        let mtm = self.mtm();
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        let alert = NSAlert::new(mtm);
+        alert.setMessageText(&NSString::from_str(title));
+        alert.setInformativeText(&NSString::from_str(text));
+        for button in buttons {
+            alert.addButtonWithTitle(&NSString::from_str(button));
+        }
+        alert.runModal() - 1000
+    }
+
+    fn check_for_updates(&self, manual: bool) {
+        if self.ivars().update_busy.replace(true) {
+            return;
+        }
+        if manual {
+            self.set_update_item("Checking for Updates…", false);
+        }
+        thread::spawn(move || {
+            let result = update::check();
+            on_main(move |delegate| delegate.on_update_checked(result, manual));
+        });
+    }
+
+    fn on_update_checked(&self, result: Result<Option<Manifest>, String>, manual: bool) {
+        let ivars = self.ivars();
+        ivars.update_busy.set(false);
+        match result {
+            Ok(Some(manifest)) => {
+                let title = format!("Update to Version {}…", manifest.version);
+                self.set_update_item(&title, true);
+                ivars.available_update.replace(Some(manifest.clone()));
+                let already_asked =
+                    ivars.prompted_version.borrow().as_deref() == Some(manifest.version.as_str());
+                if manual || (!already_asked && !ivars.menu_open.get()) {
+                    ivars.prompted_version.replace(Some(manifest.version.clone()));
+                    self.prompt_update(manifest);
+                }
+            }
+            Ok(None) => {
+                ivars.available_update.replace(None);
+                self.set_update_item(CHECK_UPDATES_TITLE, true);
+                if manual {
+                    let text = format!("Version {} is the latest.", update::VERSION);
+                    self.alert("Silimon is up to date", &text, &["OK"]);
+                }
+            }
+            Err(error) => {
+                self.set_update_item(CHECK_UPDATES_TITLE, true);
+                if manual {
+                    self.alert("Couldn’t check for updates", &error, &["OK"]);
+                }
+            }
+        }
+    }
+
+    fn prompt_update(&self, manifest: Manifest) {
+        let title = format!("Silimon {} is available", manifest.version);
+        let text = format!(
+            "You’re using version {}. Silimon will reopen when the update finishes.",
+            update::VERSION
+        );
+        if self.alert(&title, &text, &["Update Now", "Later"]) == 0 {
+            self.begin_install(manifest);
+        }
+    }
+
+    fn begin_install(&self, manifest: Manifest) {
+        let Some(app) = update::bundle_path() else {
+            self.offer_download("Silimon must be installed as an app to update itself.");
+            return;
+        };
+        if self.ivars().update_busy.replace(true) {
+            return;
+        }
+        self.set_update_item("Updating…", false);
+        thread::spawn(move || {
+            let result = update::install(&manifest, &app).and_then(|()| update::relaunch(&app));
+            on_main(move |delegate| delegate.on_update_installed(result, manifest));
+        });
+    }
+
+    fn on_update_installed(&self, result: Result<(), String>, manifest: Manifest) {
+        self.ivars().update_busy.set(false);
+        match result {
+            Ok(()) => NSApplication::sharedApplication(self.mtm()).terminate(None),
+            Err(error) => {
+                let title = format!("Update to Version {}…", manifest.version);
+                self.set_update_item(&title, true);
+                self.offer_download(&error);
+            }
+        }
+    }
+
+    fn offer_download(&self, reason: &str) {
+        let choice = self.alert(
+            "Couldn’t update Silimon",
+            reason,
+            &["Open Download Page", "Close"],
+        );
+        if choice == 0 {
+            if let Some(url) = NSURL::URLWithString(&NSString::from_str(update::RELEASES_URL)) {
+                NSWorkspace::sharedWorkspace().openURL(&url);
+            }
+        }
     }
 
     fn on_sample(&self, sample: Metrics) {
@@ -281,7 +426,7 @@ fn styled_run(text: &str, size: f64, alpha: f64) -> Retained<NSAttributedString>
     }
 }
 
-/// Rótulos pequenos e discretos, valores um pouco mais presentes.
+/// Small, quiet labels with slightly more prominent values.
 fn styled_title(segments: &[(&str, String)]) -> Retained<NSAttributedString> {
     let title = NSMutableAttributedString::new();
     for (index, (label, value)) in segments.iter().enumerate() {
@@ -296,6 +441,26 @@ fn styled_title(segments: &[(&str, String)]) -> Retained<NSAttributedString> {
     title.into_super()
 }
 
+fn on_main(action: impl FnOnce(&AppDelegate) + Send + 'static) {
+    DispatchQueue::main().exec_async(move || {
+        DELEGATE.with(|cell| {
+            if let Some(delegate) = cell.get() {
+                action(delegate);
+            }
+        });
+    });
+}
+
+fn spawn_update_timer() {
+    thread::spawn(|| {
+        thread::sleep(FIRST_CHECK_DELAY);
+        loop {
+            on_main(|delegate| delegate.check_for_updates(false));
+            thread::sleep(CHECK_INTERVAL);
+        }
+    });
+}
+
 fn spawn_sampler() {
     thread::Builder::new()
         .name("silimon-sampler".into())
@@ -304,22 +469,16 @@ fn spawn_sampler() {
                 let mut sampler = match Sampler::new() {
                     Ok(sampler) => sampler,
                     Err(error) => {
-                        eprintln!("silimon: falha ao iniciar os sensores: {error}");
+                        eprintln!("silimon: failed to start the sensors: {error}");
                         thread::sleep(Duration::from_secs(5));
                         continue;
                     }
                 };
                 loop {
                     match sampler.get_metrics(INTERVAL_MS.load(Ordering::Relaxed)) {
-                        Ok(sample) => DispatchQueue::main().exec_async(move || {
-                            DELEGATE.with(|cell| {
-                                if let Some(delegate) = cell.get() {
-                                    delegate.on_sample(sample);
-                                }
-                            });
-                        }),
+                        Ok(sample) => on_main(move |delegate| delegate.on_sample(sample)),
                         Err(error) => {
-                            eprintln!("silimon: falha na leitura: {error}");
+                            eprintln!("silimon: failed to read the sensors: {error}");
                             thread::sleep(Duration::from_secs(5));
                             break;
                         }
@@ -327,7 +486,7 @@ fn spawn_sampler() {
                 }
             }
         })
-        .expect("não foi possível iniciar a thread de amostragem");
+        .expect("failed to start the sampling thread");
 }
 
 pub fn run(mtm: MainThreadMarker) {

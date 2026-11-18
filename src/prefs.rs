@@ -1,4 +1,4 @@
-//! Preferências persistidas em NSUserDefaults.
+//! Preferences persisted in NSUserDefaults.
 
 use objc2_foundation::{NSString, NSUserDefaults};
 
