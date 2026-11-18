@@ -1,0 +1,20 @@
+[package]
+name = "silimon"
+version = "0.1.0"
+edition = "2024"
+description = "Monitor de sistema para a barra de menus do macOS em Apple Silicon"
+publish = false
+
+[dependencies]
+dispatch2 = "0.3"
+macmon = { version = "0.12", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
