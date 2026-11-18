@@ -80,13 +80,11 @@ updating. *Check for Updates* in Settings does the same on demand. An update is
 installed only if its checksum matches and it carries this project's Developer
 ID signature.
 
-## The alpha caveats
-
-- Tested on an M1 with macOS 27. The app is built for macOS 13 and later.
-- GPU temperature is hidden on chips that do not report a usable reading, which
-  includes the M1 it was tested on.
-- Sensors are read through private macOS interfaces, so a macOS update can break
-  a reading, and the app cannot be sold on the Mac App Store.
+> [!NOTE]
+> **GPU temperature is not available on the base Apple M1.** Its GPU sensors do
+> not report a usable reading, so Silimon hides the value. Sensors vary by chip
+> and Mac model: any other chip shows it whenever its sensors report a valid
+> reading.
 
 ## Privacy
 
