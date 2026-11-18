@@ -1,7 +1,9 @@
 mod app;
 mod dashboard;
+mod login_item;
 mod metrics;
 mod prefs;
+mod settings;
 mod snapshot;
 mod update;
 

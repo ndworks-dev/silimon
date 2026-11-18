@@ -1,4 +1,4 @@
-//! Status item, dropdown menu, background sampling and the update flow.
+//! Status item, dropdown menu, settings actions, background sampling and the update flow.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -14,8 +14,8 @@ use objc2_app_kit::{
     NSAlert, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSCellImagePosition,
     NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontAttributeName,
     NSFontWeightLight, NSFontWeightRegular, NSForegroundColorAttributeName, NSImage,
-    NSImageSymbolConfiguration, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength, NSWorkspace,
+    NSImageSymbolConfiguration, NSMenu, NSMenuDelegate, NSMenuItem, NSPopUpButton, NSStatusBar,
+    NSStatusItem, NSSwitch, NSVariableStatusItemLength, NSWindowDelegate, NSWorkspace,
 };
 use objc2_foundation::{
     NSAttributedString, NSAttributedStringKey, NSDictionary, NSMutableAttributedString,
@@ -23,8 +23,10 @@ use objc2_foundation::{
 };
 
 use crate::dashboard::{DashboardView, STATE};
-use crate::metrics::{self, BarMetric, INTERVALS_MS};
+use crate::login_item::{self, LoginState};
+use crate::metrics::{self, BarMetric};
 use crate::prefs;
+use crate::settings::{self, SettingsWindow};
 use crate::update::{self, Manifest};
 
 const ITEM_PADDING: f64 = 8.0;
@@ -42,13 +44,13 @@ thread_local! {
 pub struct Ivars {
     status_item: OnceCell<Retained<NSStatusItem>>,
     dashboard: OnceCell<Retained<DashboardView>>,
-    metric_items: RefCell<Vec<Retained<NSMenuItem>>>,
-    interval_items: RefCell<Vec<Retained<NSMenuItem>>>,
+    settings: OnceCell<SettingsWindow>,
     selection: RefCell<Vec<BarMetric>>,
     last_title: RefCell<String>,
     reserved_width: Cell<Option<f64>>,
     menu_open: Cell<bool>,
     update_item: OnceCell<Retained<NSMenuItem>>,
+    update_control: RefCell<Option<(String, bool)>>,
     available_update: RefCell<Option<Manifest>>,
     prompted_version: RefCell<Option<String>>,
     update_busy: Cell<bool>,
@@ -87,13 +89,44 @@ define_class!(
         }
     }
 
+    unsafe impl NSWindowDelegate for AppDelegate {
+        // The user can also change the login item in System Settings.
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            self.sync_settings();
+        }
+    }
+
     impl AppDelegate {
+        #[unsafe(method(openSettings:))]
+        fn open_settings(&self, _sender: &AnyObject) {
+            let mtm = self.mtm();
+            let target: &AnyObject = self.as_ref();
+            let settings = self.ivars().settings.get_or_init(|| {
+                let settings = settings::build(target, mtm);
+                settings.window.setDelegate(Some(ProtocolObject::from_ref(self)));
+                settings
+            });
+            self.sync_settings();
+            bring_to_front(mtm);
+            settings.window.makeKeyAndOrderFront(None);
+            settings.window.orderFrontRegardless();
+        }
+
         #[unsafe(method(toggleMetric:))]
-        fn toggle_metric(&self, sender: &NSMenuItem) {
-            let metric = BarMetric::ALL[sender.tag() as usize];
+        fn toggle_metric(&self, sender: &NSSwitch) {
+            let Some(settings) = self.ivars().settings.get() else { return };
+            let Some(index) = settings
+                .metric_switches
+                .iter()
+                .position(|control| std::ptr::eq(&**control, sender))
+            else {
+                return;
+            };
+            let metric = BarMetric::ALL[index];
             {
                 let mut selection = self.ivars().selection.borrow_mut();
-                let enabled = !selection.contains(&metric);
+                let enabled = sender.state() == NSControlStateValueOn;
                 selection.retain(|m| *m != metric);
                 if enabled {
                     selection.push(metric);
@@ -103,12 +136,32 @@ define_class!(
             }
             self.ivars().reserved_width.set(None);
             self.ivars().last_title.borrow_mut().clear();
-            self.sync_checkmarks();
             self.update_title();
         }
 
+        #[unsafe(method(toggleLoginItem:))]
+        fn toggle_login_item(&self, _sender: &NSSwitch) {
+            match login_item::toggle() {
+                Ok(LoginState::NeedsApproval) => {
+                    let choice = self.alert(
+                        "Allow Silimon to open at login",
+                        "Turn on Silimon in System Settings to finish.",
+                        &["Open System Settings", "Later"],
+                    );
+                    if choice == 0 {
+                        login_item::open_settings();
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.alert("Couldn’t change Open at Login", &error, &["OK"]);
+                }
+            }
+            self.sync_settings();
+        }
+
         #[unsafe(method(updateAction:))]
-        fn update_action(&self, _sender: &NSMenuItem) {
+        fn update_action(&self, _sender: &AnyObject) {
             let available = self.ivars().available_update.borrow().clone();
             match available {
                 Some(manifest) => self.begin_install(manifest),
@@ -117,12 +170,11 @@ define_class!(
         }
 
         #[unsafe(method(selectInterval:))]
-        fn select_interval(&self, sender: &NSMenuItem) {
-            let interval = sender.tag() as u32;
+        fn select_interval(&self, sender: &NSPopUpButton) {
+            let interval = sender.selectedTag() as u32;
             INTERVAL_MS.store(interval, Ordering::Relaxed);
             STATE.with_borrow_mut(|state| state.interval_ms = interval);
             prefs::save_interval(interval);
-            self.sync_checkmarks();
         }
     }
 );
@@ -149,16 +201,49 @@ impl AppDelegate {
         item
     }
 
-    fn submenu(&self, title: &str, items: &[Retained<NSMenuItem>]) -> Retained<NSMenuItem> {
-        let mtm = self.mtm();
-        let menu = NSMenu::new(mtm);
-        for item in items {
-            menu.addItem(item);
+    fn quit_item(&self) -> Retained<NSMenuItem> {
+        unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(self.mtm()),
+                ns_string!("Quit Silimon"),
+                Some(sel!(terminate:)),
+                ns_string!("q"),
+            )
         }
-        let parent = NSMenuItem::new(mtm);
-        parent.setTitle(&NSString::from_str(title));
-        parent.setSubmenu(Some(&menu));
-        parent
+    }
+
+    fn settings_item(&self) -> Retained<NSMenuItem> {
+        let item = self.menu_item("Settings…", sel!(openSettings:), 0);
+        item.setKeyEquivalent(ns_string!(","));
+        item
+    }
+
+    /// The hidden main menu that gives the settings window its keyboard shortcuts.
+    fn install_main_menu(&self) {
+        let mtm = self.mtm();
+        let app_menu = NSMenu::new(mtm);
+        app_menu.addItem(&self.settings_item());
+        app_menu.addItem(&self.quit_item());
+        let app_item = NSMenuItem::new(mtm);
+        app_item.setSubmenu(Some(&app_menu));
+
+        let close = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                ns_string!("Close"),
+                Some(sel!(performClose:)),
+                ns_string!("w"),
+            )
+        };
+        let window_menu = NSMenu::new(mtm);
+        window_menu.addItem(&close);
+        let window_item = NSMenuItem::new(mtm);
+        window_item.setSubmenu(Some(&window_menu));
+
+        let main_menu = NSMenu::new(mtm);
+        main_menu.addItem(&app_item);
+        main_menu.addItem(&window_item);
+        NSApplication::sharedApplication(mtm).setMainMenu(Some(&main_menu));
     }
 
     fn build_interface(&self) {
@@ -180,44 +265,15 @@ impl AppDelegate {
         menu.addItem(&dashboard_item);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
-        let metric_items: Vec<_> = BarMetric::ALL
-            .iter()
-            .enumerate()
-            .map(|(tag, m)| self.menu_item(m.title(), sel!(toggleMetric:), tag as isize))
-            .collect();
-        menu.addItem(&self.submenu("Show in Menu Bar", &metric_items));
-        ivars.metric_items.replace(metric_items);
-
-        let interval_items: Vec<_> = INTERVALS_MS
-            .iter()
-            .map(|ms| {
-                let seconds = ms / 1000;
-                let unit = if seconds == 1 { "second" } else { "seconds" };
-                self.menu_item(&format!("Every {seconds} {unit}"), sel!(selectInterval:), *ms as isize)
-            })
-            .collect();
-        menu.addItem(&self.submenu("Update Interval", &interval_items));
-        ivars.interval_items.replace(interval_items);
-        menu.addItem(&NSMenuItem::separatorItem(mtm));
-
-        let version = NSMenuItem::new(mtm);
-        version.setTitle(&NSString::from_str(&format!("Silimon {}", update::VERSION)));
-        version.setEnabled(false);
-        menu.addItem(&version);
+        // Stays hidden until a new version is available.
         let update_item = self.menu_item(CHECK_UPDATES_TITLE, sel!(updateAction:), 0);
+        update_item.setHidden(true);
         menu.addItem(&update_item);
         let _ = ivars.update_item.set(update_item);
+        menu.addItem(&self.settings_item());
         menu.addItem(&NSMenuItem::separatorItem(mtm));
-
-        let quit = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                ns_string!("Quit Silimon"),
-                Some(sel!(terminate:)),
-                ns_string!("q"),
-            )
-        };
-        menu.addItem(&quit);
+        menu.addItem(&self.quit_item());
+        self.install_main_menu();
 
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = item.button(mtm) {
@@ -238,19 +294,25 @@ impl AppDelegate {
 
         let _ = ivars.status_item.set(item);
         let _ = ivars.dashboard.set(dashboard);
-        self.sync_checkmarks();
         self.update_title();
     }
 
-    fn sync_checkmarks(&self) {
+    /// Makes the settings window show the current state.
+    fn sync_settings(&self) {
+        let ivars = self.ivars();
+        let Some(settings) = ivars.settings.get() else { return };
         let state = |on: bool| if on { NSControlStateValueOn } else { NSControlStateValueOff };
-        let selection = self.ivars().selection.borrow();
-        for (item, metric) in self.ivars().metric_items.borrow().iter().zip(BarMetric::ALL) {
-            item.setState(state(selection.contains(&metric)));
+        let selection = ivars.selection.borrow();
+        for (control, metric) in settings.metric_switches.iter().zip(BarMetric::ALL) {
+            control.setState(state(selection.contains(&metric)));
         }
-        let interval = INTERVAL_MS.load(Ordering::Relaxed);
-        for (item, ms) in self.ivars().interval_items.borrow().iter().zip(INTERVALS_MS) {
-            item.setState(state(ms == interval));
+        settings.interval.selectItemWithTag(INTERVAL_MS.load(Ordering::Relaxed) as isize);
+        let login = login_item::state();
+        settings.login.setState(state(login == LoginState::On));
+        settings.login_note.setHidden(login != LoginState::NeedsApproval);
+        if let Some((title, enabled)) = &*ivars.update_control.borrow() {
+            settings.update_button.setTitle(&NSString::from_str(title));
+            settings.update_button.setEnabled(*enabled);
         }
     }
 
@@ -287,17 +349,20 @@ impl AppDelegate {
     }
 
     fn set_update_item(&self, title: &str, enabled: bool) {
-        if let Some(item) = self.ivars().update_item.get() {
+        let ivars = self.ivars();
+        if let Some(item) = ivars.update_item.get() {
             item.setTitle(&NSString::from_str(title));
             item.setEnabled(enabled);
+            item.setHidden(ivars.available_update.borrow().is_none());
         }
+        ivars.update_control.replace(Some((title.to_string(), enabled)));
+        self.sync_settings();
     }
 
     /// Shows an alert and returns the index of the chosen button.
     fn alert(&self, title: &str, text: &str, buttons: &[&str]) -> isize {
         let mtm = self.mtm();
-        #[allow(deprecated)]
-        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+        bring_to_front(mtm);
         let alert = NSAlert::new(mtm);
         alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(text));
@@ -326,8 +391,8 @@ impl AppDelegate {
         match result {
             Ok(Some(manifest)) => {
                 let title = format!("Update to Version {}…", manifest.version);
-                self.set_update_item(&title, true);
                 ivars.available_update.replace(Some(manifest.clone()));
+                self.set_update_item(&title, true);
                 let already_asked =
                     ivars.prompted_version.borrow().as_deref() == Some(manifest.version.as_str());
                 if manual || (!already_asked && !ivars.menu_open.get()) {
@@ -411,6 +476,16 @@ impl AppDelegate {
                 view.refresh();
             }
         }
+    }
+}
+
+/// Menu bar apps are not active by default, so windows must ask to come forward.
+fn bring_to_front(mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    #[allow(deprecated)]
+    app.activateIgnoringOtherApps(true);
+    if app.respondsToSelector(sel!(activate)) {
+        let _: () = unsafe { msg_send![&*app, activate] };
     }
 }
 

@@ -45,7 +45,7 @@ drag the app to Applications.
 
 ### Menu bar
 
-Choose any mix of CPU and GPU temperature, CPU and GPU usage, memory pressure,
+Open *Settings* from the menu, or press ⌘, while it is open, and choose any mix of CPU and GPU temperature, CPU and GPU usage, memory pressure,
 memory in use, swap, chip power and system power. Each readout reserves room for
 its widest common value, so the numbers change and the menu bar stays still.
 
@@ -68,10 +68,15 @@ by the CPU, GPU, memory, Neural Engine, chip and whole system.
 
 Network and disk throughput, fan speed and battery state.
 
+## Open at login
+
+Turn on *Open at Login* in Settings to start Silimon when you sign in. It is off
+until you choose it, and you can also change it in System Settings.
+
 ## Updates
 
 The app checks the latest release when it opens and once a day, then asks before
-updating. *Check for Updates* in the menu does the same on demand. An update is
+updating. *Check for Updates* in Settings does the same on demand. An update is
 installed only if its checksum matches and it carries this project's Developer
 ID signature.
 
@@ -82,7 +87,6 @@ ID signature.
   includes the M1 it was tested on.
 - Sensors are read through private macOS interfaces, so a macOS update can break
   a reading, and the app cannot be sold on the Mac App Store.
-- It does not start with your Mac yet.
 
 ## Privacy
 
@@ -110,6 +114,8 @@ src/app.rs        status item, menu, background sampling and update flow
 src/dashboard.rs  the panel drawn inside the menu
 src/metrics.rs    menu bar selection, formatting and history, free of AppKit
 src/prefs.rs      preferences
+src/settings.rs   the settings window
+src/login_item.rs opening the app at login
 src/update.rs     update check, verification and replacement of the app
 src/snapshot.rs   renders the panel to a PNG, for checking the layout
 scripts/          bundling, release and the install script
