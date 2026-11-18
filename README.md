@@ -24,7 +24,7 @@ the CPU temperature. Open it for the whole picture, including the memory
 pressure macOS itself uses to decide when memory is running short. No window,
 no Dock icon, and no administrator password.
 
-**Alpha · 0.1.0.** Apple Silicon only.
+**Alpha · 0.1.1.** Apple Silicon only.
 
 ## Install
 
@@ -126,11 +126,12 @@ Sensor access comes from the [macmon](https://github.com/vladkens/macmon) librar
 ## Making a release
 
 The Developer ID certificate lives in a keychain, so a release is made from a
-Mac that has it. Set the version in `Cargo.toml`, then:
+Mac that has it. Set the version in `Cargo.toml`, describe it in
+`release-notes/v<version>.md`, then:
 
 ```sh
 cp scripts/build-release.env.example scripts/build-release.env  # once, and fill it in
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 scripts/build-release.sh --release
 ```
 

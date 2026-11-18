@@ -44,9 +44,11 @@ esac
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 [ -n "$VERSION" ] || die "No version in Cargo.toml."
 TAG="v$VERSION"
+NOTES="release-notes/$TAG.md"
 
 if [ "$RELEASE" = 1 ]; then
     command -v gh >/dev/null || die "The GitHub CLI (gh) is not installed."
+    [ -f "$NOTES" ] || die "There is no $NOTES describing this release."
     tagged="$(git rev-list -n1 "$TAG" 2>/dev/null)" || die "There is no tag $TAG: tag the commit and push the tag first."
     [ "$tagged" = "$(git rev-parse HEAD)" ] || die "HEAD is not the commit $TAG names."
     [ -z "$(git status --porcelain)" ] || die "The working tree has changes $TAG does not have."
@@ -127,7 +129,7 @@ if [ "$RELEASE" = 1 ]; then
 
     log "Publishing $TAG"
     gh release create "$TAG" --repo "$REPO" --verify-tag --latest \
-        --title "Silimon $VERSION" --generate-notes \
+        --title "Silimon $VERSION" --notes-file "$NOTES" \
         "$DIST/Silimon.dmg" "$DIST/Silimon.zip" "$DIST/latest.json" scripts/install.sh
     log "Published: $(gh release view "$TAG" --repo "$REPO" --json url -q .url)"
 fi
