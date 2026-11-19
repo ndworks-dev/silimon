@@ -15,7 +15,7 @@
 power. Built with Rust and AppKit.**
 
 [Install](#install) · [Features](#whats-in-the-menu) · [Building](#building) ·
-[Releases](https://github.com/ndworks-dev/silimon/releases)
+[Releases](https://github.com/ndworks-dev/silimon/releases) · [Support](#support)
 
 </div>
 
@@ -137,6 +137,13 @@ The script runs the tests, builds the app, has Apple notarize it, and publishes
 `Silimon.dmg`, `Silimon.zip`, `latest.json` and `install.sh`. It refuses a commit
 that is not the tagged one. Publishing is what offers the version to every
 install.
+
+## Support
+
+Silimon is free. If it is useful to you, you can support its development on
+Ko-fi, also from *Support* at the end of Settings.
+
+<a href="https://ko-fi.com/nickolasdeluca"><img src="assets/kofi-button.png" alt="Buy me a coffee on Ko-fi" height="36"></a>
 
 ## License
 
