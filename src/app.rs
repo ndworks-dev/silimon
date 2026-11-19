@@ -169,6 +169,11 @@ define_class!(
             }
         }
 
+        #[unsafe(method(openKofi:))]
+        fn open_kofi(&self, _sender: &AnyObject) {
+            open_url(settings::KOFI_URL);
+        }
+
         #[unsafe(method(selectInterval:))]
         fn select_interval(&self, sender: &NSPopUpButton) {
             let interval = sender.selectedTag() as u32;
@@ -462,9 +467,7 @@ impl AppDelegate {
             &["Open Download Page", "Close"],
         );
         if choice == 0 {
-            if let Some(url) = NSURL::URLWithString(&NSString::from_str(update::RELEASES_URL)) {
-                NSWorkspace::sharedWorkspace().openURL(&url);
-            }
+            open_url(update::RELEASES_URL);
         }
     }
 
@@ -573,4 +576,11 @@ pub fn run(mtm: MainThreadMarker) {
         let _ = cell.set(delegate);
     });
     app.run();
+}
+
+/// Opens a web page in the default browser.
+fn open_url(address: &str) {
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(address)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
+    }
 }

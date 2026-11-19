@@ -2,14 +2,14 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, msg_send, sel};
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, msg_send, sel};
 use objc2_app_kit::{
     NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControlSize, NSFont,
-    NSFontWeightMedium, NSLayoutAttribute, NSLayoutConstraintOrientation, NSPopUpButton,
+    NSFontWeightMedium, NSImage, NSLayoutAttribute, NSLayoutConstraintOrientation, NSPopUpButton,
     NSStackView, NSSwitch, NSTextField, NSTitlePosition, NSUserInterfaceLayoutOrientation, NSView,
     NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSArray, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSArray, NSData, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString};
 
 use crate::metrics::{BarMetric, INTERVALS_MS};
 use crate::update;
@@ -19,6 +19,12 @@ const MARGIN: f64 = 20.0;
 const GROUP_WIDTH: f64 = WINDOW_WIDTH - MARGIN * 2.0;
 const ROW_HEIGHT: f64 = 36.0;
 const METRIC_ROW_HEIGHT: f64 = 30.0;
+const SUPPORT_ROW_HEIGHT: f64 = 46.0;
+
+pub const KOFI_URL: &str = "https://ko-fi.com/nickolasdeluca";
+/// Ko-fi's official "Buy me a coffee" button, 580 × 146 px.
+const KOFI_BUTTON_PNG: &[u8] = include_bytes!("../assets/kofi-button.png");
+const KOFI_BUTTON_HEIGHT: f64 = 30.0;
 
 pub struct SettingsWindow {
     pub window: Retained<NSWindow>,
@@ -100,6 +106,27 @@ fn add_group(root: &NSStackView, title: &str, rows: &[Retained<NSStackView>], mt
     root.setCustomSpacing_afterView(18.0, &group);
 }
 
+/// Ko-fi's button art as a borderless image button that opens the donation page.
+fn kofi_button(target: &AnyObject, mtm: MainThreadMarker) -> Retained<NSButton> {
+    let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(KOFI_BUTTON_PNG))
+        .expect("the bundled Ko-fi button is a valid PNG");
+    let size = image.size();
+    let width = (KOFI_BUTTON_HEIGHT * size.width / size.height).round();
+    image.setSize(NSSize::new(width, KOFI_BUTTON_HEIGHT));
+    let button = unsafe {
+        NSButton::buttonWithImage_target_action(&image, Some(target), Some(sel!(openKofi:)), mtm)
+    };
+    button.setBordered(false);
+    button.setToolTip(Some(&NSString::from_str("Support Silimon on Ko-fi")));
+    unsafe {
+        let _: () = msg_send![&*button, setAccessibilityLabel: &*NSString::from_str("Support Silimon on Ko-fi")];
+    }
+    button.setTranslatesAutoresizingMaskIntoConstraints(false);
+    button.widthAnchor().constraintEqualToConstant(width).setActive(true);
+    button.heightAnchor().constraintEqualToConstant(KOFI_BUTTON_HEIGHT).setActive(true);
+    button
+}
+
 pub fn build(target: &AnyObject, mtm: MainThreadMarker) -> SettingsWindow {
     let root = NSStackView::new(mtm);
     root.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
@@ -166,6 +193,10 @@ pub fn build(target: &AnyObject, mtm: MainThreadMarker) -> SettingsWindow {
     };
     let version = label(&format!("Version {}", update::VERSION), mtm);
     add_group(&root, "Updates", &[row(&version, &update_button, ROW_HEIGHT, mtm)], mtm);
+
+    let kofi = kofi_button(target, mtm);
+    let support = row(&label("Enjoying Silimon?", mtm), &kofi, SUPPORT_ROW_HEIGHT, mtm);
+    add_group(&root, "Support", &[support], mtm);
 
     let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WINDOW_WIDTH, 400.0));
     let window = unsafe {
