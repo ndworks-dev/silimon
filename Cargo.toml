@@ -1,6 +1,6 @@
 [package]
 name = "silimon"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A native menu bar system monitor for Apple Silicon Macs"
 publish = false

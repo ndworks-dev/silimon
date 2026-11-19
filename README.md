@@ -24,7 +24,7 @@ the CPU temperature. Open it for the whole picture, including the memory
 pressure macOS itself uses to decide when memory is running short. No window,
 no Dock icon, and no administrator password.
 
-**Alpha · 0.1.1.** Apple Silicon only.
+**Alpha · 0.1.2.** Apple Silicon only.
 
 ## Install
 
@@ -129,7 +129,7 @@ Mac that has it. Set the version in `Cargo.toml`, describe it in
 
 ```sh
 cp scripts/build-release.env.example scripts/build-release.env  # once, and fill it in
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 scripts/build-release.sh --release
 ```
 
